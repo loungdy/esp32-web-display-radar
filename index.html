@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ESP32 Ultrasonic Radar</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: white;
+      padding: 15px;
+    }
+
+    h1 {
+      text-align: center;
+      color: #38bdf8;
+      font-size: 24px;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: auto;
+      background: #1e293b;
+      padding: 15px;
+      border-radius: 14px;
+    }
+
+    button {
+      width: 100%;
+      padding: 14px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 18px;
+      margin-bottom: 15px;
+    }
+
+    button:active {
+      background: #1d4ed8;
+    }
+
+    .status {
+      text-align: center;
+      margin-bottom: 15px;
+      color: #22c55e;
+      font-size: 16px;
+    }
+
+    .latest {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+
+    .card {
+      background: #020617;
+      padding: 12px;
+      border-radius: 10px;
+      text-align: center;
+    }
+
+    .card span {
+      display: block;
+      margin-top: 8px;
+      font-size: 20px;
+      color: #38bdf8;
+      font-weight: bold;
+    }
+
+    canvas {
+      width: 100%;
+      background: #020617;
+      border-radius: 12px;
+      margin-bottom: 15px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #020617;
+      border-radius: 10px;
+      overflow: hidden;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 10px;
+      text-align: center;
+      border-bottom: 1px solid #334155;
+    }
+
+    th {
+      background: #0284c7;
+    }
+
+    .near {
+      color: #ef4444;
+      font-weight: bold;
+    }
+
+    .medium {
+      color: #facc15;
+      font-weight: bold;
+    }
+
+    .far {
+      color: #22c55e;
+      font-weight: bold;
+    }
+
+    .no-object {
+      color: #94a3b8;
+    }
+
+    @media (max-width: 600px) {
+      .latest {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        font-size: 12px;
+      }
+
+      th, td {
+        padding: 7px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="container">
+    <h1>ESP32 Ultrasonic Radar</h1>
+
+    <button onclick="connectBLE()">Connect Bluetooth</button>
+
+    <div class="status" id="connectionStatus">
+      Status: Not connected
+    </div>
+
+    <div class="latest">
+      <div class="card">
+        Angle
+        <span id="latestAngle">--</span>
+      </div>
+
+      <div class="card">
+        Distance
+        <span id="latestDistance">--</span>
+      </div>
+
+      <div class="card">
+        Status
+        <span id="latestStatus">--</span>
+      </div>
+    </div>
+
+    <canvas id="radarCanvas" width="700" height="350"></canvas>
+
+    <table>
+      <thead>
+        <tr>
+          <th>No.</th>
+          <th>Time</th>
+          <th>Angle</th>
+          <th>Distance</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+
+      <tbody id="dataTable"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
+    const CHARACTERISTIC_UUID = "abcd1234-5678-90ab-cdef-1234567890ab";
+
+    let rowCount = 0;
+    let currentAngle = 90;
+    let currentDistance = -1;
+
+    const canvas = document.getElementById("radarCanvas");
+    const ctx = canvas.getContext("2d");
+
+    async function connectBLE() {
+      try {
+        document.getElementById("connectionStatus").innerText =
+          "Status: Searching Bluetooth...";
+
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [
+            { namePrefix: "ESP32-Ultrasonic-Radar" }
+          ],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        document.getElementById("connectionStatus").innerText =
+          "Status: Connecting...";
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        const characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+
+        await characteristic.startNotifications();
+
+        characteristic.addEventListener(
+          "characteristicvaluechanged",
+          handleRadarData
+        );
+
+        document.getElementById("connectionStatus").innerText =
+          "Status: Connected to " + device.name;
+
+        device.addEventListener("gattserverdisconnected", () => {
+          document.getElementById("connectionStatus").innerText =
+            "Status: Disconnected";
+        });
+
+      } catch (error) {
+        document.getElementById("connectionStatus").innerText =
+          "Status: Bluetooth connection failed";
+        console.error(error);
+      }
+    }
+
+    function handleRadarData(event) {
+      const decoder = new TextDecoder("utf-8");
+      const text = decoder.decode(event.target.value);
+
+      try {
+        const data = JSON.parse(text);
+
+        const angle = data.angle;
+        const distance = data.distance;
+        const status = data.status;
+
+        currentAngle = angle;
+        currentDistance = distance;
+
+        document.getElementById("latestAngle").innerText = angle + "°";
+
+        if (distance >= 0) {
+          document.getElementById("latestDistance").innerText =
+            distance + " cm";
+        } else {
+          document.getElementById("latestDistance").innerText =
+            "No Object";
+        }
+
+        document.getElementById("latestStatus").innerText = status;
+
+        addTableRow(angle, distance, status);
+        drawRadar(angle, distance);
+
+      } catch (error) {
+        console.log("Invalid data:", text);
+      }
+    }
+
+    function addTableRow(angle, distance, status) {
+      rowCount++;
+
+      const table = document.getElementById("dataTable");
+      const row = table.insertRow(0);
+      const time = new Date().toLocaleTimeString();
+
+      let statusClass = "no-object";
+
+      if (status === "Very Near" || status === "Near") {
+        statusClass = "near";
+      } else if (status === "Medium") {
+        statusClass = "medium";
+      } else if (status === "Far") {
+        statusClass = "far";
+      }
+
+      row.innerHTML = `
+        <td>${rowCount}</td>
+        <td>${time}</td>
+        <td>${angle}°</td>
+        <td>${distance >= 0 ? distance + " cm" : "No Object"}</td>
+        <td class="${statusClass}">${status}</td>
+      `;
+
+      if (table.rows.length > 50) {
+        table.deleteRow(50);
+      }
+    }
+
+    function drawRadar(angle, distance) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height - 20;
+      const maxRadius = 300;
+
+      ctx.strokeStyle = "#22c55e";
+      ctx.lineWidth = 2;
+
+      // Draw radar arcs
+      for (let r = 75; r <= maxRadius; r += 75) {
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, r, Math.PI, 2 * Math.PI);
+        ctx.stroke();
+
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "14px Arial";
+        ctx.fillText(
+          Math.round((r / maxRadius) * 100) + "cm",
+          centerX + r - 35,
+          centerY - 5
+        );
+      }
+
+      // Draw angle lines
+      for (let a = 0; a <= 180; a += 30) {
+        const rad = (180 - a) * Math.PI / 180;
+        const x = centerX + maxRadius * Math.cos(rad);
+        const y = centerY - maxRadius * Math.sin(rad);
+
+        ctx.beginPath();
+        ctx.moveTo(centerX, centerY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+
+        ctx.fillStyle = "#94a3b8";
+        ctx.font = "14px Arial";
+        ctx.fillText(a + "°", x - 10, y - 5);
+      }
+
+      // Draw scanning line
+      const scanRad = (180 - angle) * Math.PI / 180;
+      const scanX = centerX + maxRadius * Math.cos(scanRad);
+      const scanY = centerY - maxRadius * Math.sin(scanRad);
+
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.lineTo(scanX, scanY);
+      ctx.stroke();
+
+      // Draw object point
+      if (distance >= 0 && distance <= 100) {
+        const objectRadius = map(distance, 0, 100, 0, maxRadius);
+        const objectX = centerX + objectRadius * Math.cos(scanRad);
+        const objectY = centerY - objectRadius * Math.sin(scanRad);
+
+        ctx.fillStyle = "#ef4444";
+        ctx.beginPath();
+        ctx.arc(objectX, objectY, 8, 0, 2 * Math.PI);
+        ctx.fill();
+
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "16px Arial";
+        ctx.fillText(distance + "cm", objectX + 10, objectY);
+      }
+
+      // Bottom text
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "18px Arial";
+      ctx.fillText(
+        "Angle: " + angle + "°    Distance: " +
+        (distance >= 0 ? distance + " cm" : "No Object"),
+        20,
+        30
+      );
+    }
+
+    function map(value, inMin, inMax, outMin, outMax) {
+      return (value - inMin) * (outMax - outMin) /
+             (inMax - inMin) + outMin;
+    }
+
+    drawRadar(90, -1);
+  </script>
+
+</body>
+</html>
