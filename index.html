@@ -5,6 +5,10 @@
   <title>ESP32 Ultrasonic Radar</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
   <style>
     * {
       box-sizing: border-box;
@@ -15,7 +19,7 @@
       font-family: Arial, sans-serif;
       background: #020617;
       color: white;
-      padding: 12px;
+      padding: 10px;
     }
 
     .container {
@@ -24,30 +28,39 @@
       background: #0f172a;
       padding: 14px;
       border-radius: 16px;
-      box-shadow: 0 0 20px rgba(0,0,0,0.4);
     }
 
     h1 {
       text-align: center;
       color: #38bdf8;
       font-size: 24px;
-      margin-top: 8px;
+      margin: 8px 0 14px;
     }
 
-    button {
-      width: 100%;
-      padding: 14px;
-      background: #2563eb;
-      color: white;
-      border: none;
-      border-radius: 12px;
-      font-size: 18px;
-      font-weight: bold;
+    .btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
       margin-bottom: 12px;
     }
 
-    button:active {
-      background: #1d4ed8;
+    button {
+      padding: 14px;
+      color: white;
+      border: none;
+      border-radius: 12px;
+      font-size: 17px;
+      font-weight: bold;
+      touch-action: manipulation;
+      cursor: pointer;
+    }
+
+    .connect-btn {
+      background: #2563eb;
+    }
+
+    .clear-btn {
+      background: #dc2626;
     }
 
     .status {
@@ -95,10 +108,9 @@
     }
 
     .table-box {
-      max-height: 310px;
-      overflow-y: auto;
       border-radius: 12px;
       background: #020617;
+      overflow: hidden;
     }
 
     table {
@@ -115,9 +127,6 @@
 
     th {
       background: #0284c7;
-      position: sticky;
-      top: 0;
-      z-index: 2;
     }
 
     .near {
@@ -139,13 +148,16 @@
       color: #94a3b8;
     }
 
-    @media (max-width: 600px) {
-      body {
-        padding: 8px;
-      }
+    .hint {
+      margin-top: 12px;
+      text-align: center;
+      color: #94a3b8;
+      font-size: 13px;
+    }
 
-      h1 {
-        font-size: 21px;
+    @media (max-width: 600px) {
+      .btn-row {
+        grid-template-columns: 1fr;
       }
 
       .latest {
@@ -172,7 +184,10 @@
   <div class="container">
     <h1>ESP32 Ultrasonic Radar</h1>
 
-    <button onclick="connectBLE()">Connect Bluetooth</button>
+    <div class="btn-row">
+      <button class="connect-btn" onclick="connectBLE()">Connect Bluetooth</button>
+      <button class="clear-btn" onclick="clearData()">Clear Data</button>
+    </div>
 
     <div class="status" id="connectionStatus">
       Status: Not connected
@@ -213,24 +228,32 @@
         <tbody id="dataTable"></tbody>
       </table>
     </div>
+
+    <div class="hint">
+      Use Android Chrome with HTTPS hosting. iPhone Safari/Chrome usually cannot use Web Bluetooth.
+    </div>
   </div>
 
   <script>
     const SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
     const CHARACTERISTIC_UUID = "abcd1234-5678-90ab-cdef-1234567890ab";
 
-    const MAX_DISTANCE = 100;
-    const MAX_TABLE_ROWS = 40;
+    const MAX_DISTANCE = 120;
+    const MAX_TABLE_ROWS = 10;
 
     let rowCount = 0;
 
     let targetAngle = 90;
     let displayAngle = 90;
-    let latestDistance = -1;
-    let latestStatus = "No Object";
+
+    let rawDistance = -1;
+    let smoothDistance = -1;
+
+    let latestStatusCode = 0;
+    let latestStatusText = "No Object";
 
     let lastTableUpdate = 0;
-    let lastDataForTable = null;
+    let lastTableData = null;
 
     const canvas = document.getElementById("radarCanvas");
     const ctx = canvas.getContext("2d");
@@ -246,9 +269,16 @@
     }
 
     window.addEventListener("resize", resizeCanvas);
-    resizeCanvas();
+
+    setTimeout(resizeCanvas, 100);
 
     async function connectBLE() {
+      if (!navigator.bluetooth) {
+        document.getElementById("connectionStatus").innerText =
+          "Status: Web Bluetooth not supported. Use Android Chrome.";
+        return;
+      }
+
       try {
         document.getElementById("connectionStatus").innerText =
           "Status: Searching Bluetooth...";
@@ -285,43 +315,90 @@
       } catch (error) {
         document.getElementById("connectionStatus").innerText =
           "Status: Bluetooth connection failed";
-
         console.error(error);
       }
     }
 
+    function statusTextFromCode(code) {
+      if (code === 1) return "Very Near";
+      if (code === 2) return "Near";
+      if (code === 3) return "Medium";
+      if (code === 4) return "Far";
+      return "No Object";
+    }
+
     function handleRadarData(event) {
       const decoder = new TextDecoder("utf-8");
-      const text = decoder.decode(event.target.value);
+      const text = decoder.decode(event.target.value).trim();
 
       try {
-        const data = JSON.parse(text);
+        // Supports new ESP32 CSV: angle,distance,statusCode
+        if (text.includes(",")) {
+          const parts = text.split(",");
 
-        targetAngle = Number(data.angle);
-        latestDistance = Number(data.distance);
-        latestStatus = data.status;
+          if (parts.length === 3) {
+            const angle = Number(parts[0]);
+            const distance = Number(parts[1]);
+            const statusCode = Number(parts[2]);
 
-        document.getElementById("latestAngle").innerText = targetAngle + "°";
-
-        if (latestDistance >= 0) {
-          document.getElementById("latestDistance").innerText =
-            latestDistance.toFixed(1) + " cm";
-        } else {
-          document.getElementById("latestDistance").innerText =
-            "No Object";
+            updateRadarData(angle, distance, statusCode);
+            return;
+          }
         }
 
-        document.getElementById("latestStatus").innerText = latestStatus;
+        // Also supports old ESP32 JSON: {"angle":90,"distance":25.3,"status":"Near"}
+        if (text.startsWith("{")) {
+          const data = JSON.parse(text);
+          const angle = Number(data.angle);
+          const distance = Number(data.distance);
+          let statusCode = 0;
 
-        lastDataForTable = {
-          angle: targetAngle,
-          distance: latestDistance,
-          status: latestStatus
-        };
+          if (data.status === "Very Near") statusCode = 1;
+          else if (data.status === "Near") statusCode = 2;
+          else if (data.status === "Medium") statusCode = 3;
+          else if (data.status === "Far") statusCode = 4;
 
+          updateRadarData(angle, distance, statusCode);
+        }
       } catch (error) {
-        console.log("Invalid data:", text);
+        console.log("Invalid BLE data:", text);
       }
+    }
+
+    function updateRadarData(angle, distance, statusCode) {
+      if (Number.isNaN(angle)) return;
+
+      targetAngle = angle;
+      rawDistance = distance;
+      latestStatusCode = statusCode;
+      latestStatusText = statusTextFromCode(statusCode);
+
+      if (rawDistance >= 0) {
+        if (smoothDistance < 0) {
+          smoothDistance = rawDistance;
+        } else {
+          smoothDistance += (rawDistance - smoothDistance) * 0.35;
+        }
+      } else {
+        smoothDistance = -1;
+      }
+
+      document.getElementById("latestAngle").innerText =
+        targetAngle + "°";
+
+      document.getElementById("latestDistance").innerText =
+        smoothDistance >= 0
+          ? smoothDistance.toFixed(1) + " cm"
+          : "No Object";
+
+      document.getElementById("latestStatus").innerText =
+        latestStatusText;
+
+      lastTableData = {
+        angle: targetAngle,
+        distance: smoothDistance,
+        status: latestStatusText
+      };
     }
 
     function addTableRow(angle, distance, status) {
@@ -354,9 +431,24 @@
       }
     }
 
+    function clearData() {
+      document.getElementById("dataTable").innerHTML = "";
+      rowCount = 0;
+
+      rawDistance = -1;
+      smoothDistance = -1;
+      latestStatusText = "No Object";
+
+      document.getElementById("latestAngle").innerText = "--";
+      document.getElementById("latestDistance").innerText = "--";
+      document.getElementById("latestStatus").innerText = "--";
+    }
+
     function drawRadar() {
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
+
+      if (width === 0 || height === 0) return;
 
       ctx.clearRect(0, 0, width, height);
 
@@ -364,16 +456,25 @@
       const centerY = height - 18;
       const radius = Math.min(width * 0.45, height * 0.86);
 
-      // Smooth angle movement
-      displayAngle += (targetAngle - displayAngle) * 0.22;
+      displayAngle += (targetAngle - displayAngle) * 0.08;
 
-      // Background fade
       ctx.fillStyle = "#020617";
       ctx.fillRect(0, 0, width, height);
 
-      // Radar arcs
-      ctx.strokeStyle = "#166534";
-      ctx.lineWidth = 1.5;
+      const bgGradient = ctx.createRadialGradient(
+        centerX, centerY, 10,
+        centerX, centerY, radius
+      );
+      bgGradient.addColorStop(0, "rgba(34,197,94,0.08)");
+      bgGradient.addColorStop(1, "rgba(34,197,94,0.00)");
+
+      ctx.fillStyle = bgGradient;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, Math.PI, 2 * Math.PI);
+      ctx.fill();
+
+      ctx.strokeStyle = "rgba(34,197,94,0.45)";
+      ctx.lineWidth = 1.3;
 
       for (let r = radius / 4; r <= radius; r += radius / 4) {
         ctx.beginPath();
@@ -383,10 +484,9 @@
         ctx.fillStyle = "#64748b";
         ctx.font = "12px Arial";
         const cm = Math.round((r / radius) * MAX_DISTANCE);
-        ctx.fillText(cm + "cm", centerX + r - 34, centerY - 6);
+        ctx.fillText(cm + "cm", centerX + r - 38, centerY - 6);
       }
 
-      // Angle lines
       for (let a = 0; a <= 180; a += 30) {
         const rad = (180 - a) * Math.PI / 180;
         const x = centerX + radius * Math.cos(rad);
@@ -402,13 +502,20 @@
         ctx.fillText(a + "°", x - 10, y - 5);
       }
 
-      // Sweep line
       const scanRad = (180 - displayAngle) * Math.PI / 180;
       const scanX = centerX + radius * Math.cos(scanRad);
       const scanY = centerY - radius * Math.sin(scanRad);
 
+      ctx.strokeStyle = "rgba(56,189,248,0.18)";
+      ctx.lineWidth = 14;
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.lineTo(scanX, scanY);
+      ctx.stroke();
+
       const gradient = ctx.createLinearGradient(centerX, centerY, scanX, scanY);
-      gradient.addColorStop(0, "rgba(56,189,248,0.2)");
+      gradient.addColorStop(0, "rgba(56,189,248,0.05)");
+      gradient.addColorStop(0.6, "rgba(56,189,248,0.6)");
       gradient.addColorStop(1, "rgba(56,189,248,1)");
 
       ctx.strokeStyle = gradient;
@@ -418,9 +525,8 @@
       ctx.lineTo(scanX, scanY);
       ctx.stroke();
 
-      // Object point
-      if (latestDistance >= 0 && latestDistance <= MAX_DISTANCE) {
-        const objectRadius = map(latestDistance, 0, MAX_DISTANCE, 0, radius);
+      if (smoothDistance >= 0 && smoothDistance <= MAX_DISTANCE) {
+        const objectRadius = map(smoothDistance, 0, MAX_DISTANCE, 0, radius);
         const objectX = centerX + objectRadius * Math.cos(scanRad);
         const objectY = centerY - objectRadius * Math.sin(scanRad);
 
@@ -429,24 +535,24 @@
         ctx.arc(objectX, objectY, 8, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.beginPath();
-        ctx.arc(objectX, objectY, 15, 0, Math.PI * 2);
-        ctx.strokeStyle = "rgba(239,68,68,0.5)";
+        ctx.strokeStyle = "rgba(239,68,68,0.65)";
         ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(objectX, objectY, 17, 0, Math.PI * 2);
         ctx.stroke();
 
         ctx.fillStyle = "#ffffff";
         ctx.font = "14px Arial";
-        ctx.fillText(latestDistance.toFixed(1) + " cm", objectX + 12, objectY);
+        ctx.fillText(smoothDistance.toFixed(1) + " cm", objectX + 12, objectY);
       }
 
-      // Top info
       ctx.fillStyle = "#ffffff";
       ctx.font = "16px Arial";
 
-      let distanceText = latestDistance >= 0
-        ? latestDistance.toFixed(1) + " cm"
-        : "No Object";
+      const distanceText =
+        smoothDistance >= 0
+          ? smoothDistance.toFixed(1) + " cm"
+          : "No Object";
 
       ctx.fillText(
         "Angle: " + Math.round(targetAngle) + "°    Distance: " + distanceText,
@@ -458,15 +564,15 @@
     function updateTableSlowly() {
       const now = Date.now();
 
-      if (lastDataForTable && now - lastTableUpdate > 300) {
+      if (lastTableData && now - lastTableUpdate > 700) {
         addTableRow(
-          lastDataForTable.angle,
-          lastDataForTable.distance,
-          lastDataForTable.status
+          lastTableData.angle,
+          lastTableData.distance,
+          lastTableData.status
         );
 
         lastTableUpdate = now;
-        lastDataForTable = null;
+        lastTableData = null;
       }
     }
 
@@ -481,6 +587,7 @@
              (inMax - inMin) + outMin;
     }
 
+    resizeCanvas();
     animate();
   </script>
 
